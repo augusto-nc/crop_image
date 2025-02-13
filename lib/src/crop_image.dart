@@ -179,14 +179,25 @@ class CropImage extends StatefulWidget {
   }
 }
 
-enum _CornerTypes { UpperLeft, UpperRight, LowerRight, LowerLeft, None, Move }
+/// Alteramos o enum para incluir também as laterais (Top, Right, Bottom, Left)
+enum _CornerTypes {
+  UpperLeft,
+  UpperRight,
+  LowerRight,
+  LowerLeft,
+  Top,
+  Right,
+  Bottom,
+  Left,
+  None,
+  Move
+}
 
 class _CropImageState extends State<CropImage> {
   late CropController controller;
   late ImageStream _stream;
   late ImageStreamListener _streamListener;
   var currentCrop = Rect.zero;
-  var size = Size.zero;
   _TouchPoint? panStart;
 
   Map<_CornerTypes, Offset> get gridCorners => <_CornerTypes, Offset>{
@@ -276,7 +287,7 @@ class _CropImageState extends State<CropImage> {
             if (controller.getImage() == null) {
               return const CircularProgressIndicator.adaptive();
             }
-            // we remove the borders
+            // Removemos os padding das bordas
             final double maxWidth =
                 constraints.maxWidth - 2 * widget.paddingSize;
             final double maxHeight =
@@ -341,8 +352,27 @@ class _CropImageState extends State<CropImage> {
     if (panStart == null) {
       final type = hitTest(details.localPosition);
       if (type != _CornerTypes.None) {
-        var basePoint = gridCorners[
-            (type == _CornerTypes.Move) ? _CornerTypes.UpperLeft : type]!;
+        Offset basePoint;
+        final cropRect = Rect.fromPoints(gridCorners[_CornerTypes.UpperLeft]!,
+            gridCorners[_CornerTypes.LowerRight]!);
+        if (type == _CornerTypes.Move) {
+          basePoint = gridCorners[_CornerTypes.UpperLeft]!;
+        } else if (type == _CornerTypes.Top) {
+          basePoint =
+              Offset((cropRect.left + cropRect.right) / 2, cropRect.top);
+        } else if (type == _CornerTypes.Bottom) {
+          basePoint =
+              Offset((cropRect.left + cropRect.right) / 2, cropRect.bottom);
+        } else if (type == _CornerTypes.Left) {
+          basePoint =
+              Offset(cropRect.left, (cropRect.top + cropRect.bottom) / 2);
+        } else if (type == _CornerTypes.Right) {
+          basePoint =
+              Offset(cropRect.right, (cropRect.top + cropRect.bottom) / 2);
+        } else {
+          // Para as quinas
+          basePoint = gridCorners[type]!;
+        }
         setState(() {
           panStart = _TouchPoint(type, details.localPosition - basePoint);
         });
@@ -357,8 +387,18 @@ class _CropImageState extends State<CropImage> {
           Offset(widget.paddingSize, widget.paddingSize);
       if (panStart!.type == _CornerTypes.Move) {
         moveArea(offset);
-      } else {
+      } else if (panStart!.type == _CornerTypes.UpperLeft ||
+          panStart!.type == _CornerTypes.UpperRight ||
+          panStart!.type == _CornerTypes.LowerRight ||
+          panStart!.type == _CornerTypes.LowerLeft) {
+        // Drag nas quinas: manter razão de aspecto (se definida)
         moveCorner(panStart!.type, offset);
+      } else if (panStart!.type == _CornerTypes.Top ||
+          panStart!.type == _CornerTypes.Bottom ||
+          panStart!.type == _CornerTypes.Left ||
+          panStart!.type == _CornerTypes.Right) {
+        // Drag nas laterais: alteração livre (sem travar a proporção)
+        moveSide(panStart!.type, offset);
       }
       widget.onCrop?.call(controller.crop);
     }
@@ -377,6 +417,7 @@ class _CropImageState extends State<CropImage> {
   }
 
   _CornerTypes hitTest(Offset point) {
+    // Primeiro, testar se o toque está nas quinas
     for (final gridCorner in gridCorners.entries) {
       final area = Rect.fromCenter(
           center: gridCorner.value,
@@ -386,14 +427,34 @@ class _CropImageState extends State<CropImage> {
         return gridCorner.key;
       }
     }
-
+    // Definir o retângulo de crop (usando as quinas)
+    final cropRect = Rect.fromPoints(gridCorners[_CornerTypes.UpperLeft]!,
+        gridCorners[_CornerTypes.LowerRight]!);
+    // Testar as laterais (top, bottom, left, right)
+    if ((point.dy - cropRect.top).abs() < widget.touchSize / 2 &&
+        point.dx > cropRect.left &&
+        point.dx < cropRect.right) {
+      return _CornerTypes.Top;
+    }
+    if ((point.dy - cropRect.bottom).abs() < widget.touchSize / 2 &&
+        point.dx > cropRect.left &&
+        point.dx < cropRect.right) {
+      return _CornerTypes.Bottom;
+    }
+    if ((point.dx - cropRect.left).abs() < widget.touchSize / 2 &&
+        point.dy > cropRect.top &&
+        point.dy < cropRect.bottom) {
+      return _CornerTypes.Left;
+    }
+    if ((point.dx - cropRect.right).abs() < widget.touchSize / 2 &&
+        point.dy > cropRect.top &&
+        point.dy < cropRect.bottom) {
+      return _CornerTypes.Right;
+    }
     if (widget.alwaysMove) {
       return _CornerTypes.Move;
     }
-
-    final area = Rect.fromPoints(gridCorners[_CornerTypes.UpperLeft]!,
-        gridCorners[_CornerTypes.LowerRight]!);
-    return area.contains(point) ? _CornerTypes.Move : _CornerTypes.None;
+    return cropRect.contains(point) ? _CornerTypes.Move : _CornerTypes.None;
   }
 
   void moveArea(Offset point) {
@@ -468,7 +529,7 @@ class _CropImageState extends State<CropImage> {
         assert(false);
     }
 
-    //FIXME: does not work with non-straight "rotation"
+    // Para as quinas, se aspectRatio estiver definido, travamos a proporção
     if (controller.aspectRatio != null) {
       final width = right - left;
       final height = bottom - top;
@@ -499,6 +560,55 @@ class _CropImageState extends State<CropImage> {
             assert(false);
         }
       }
+    }
+
+    controller.crop = Rect.fromLTRB(left, top, right, bottom).divide(size);
+  }
+
+  /// Nova função para mover as laterais sem travar a proporção.
+  void moveSide(_CornerTypes type, Offset point) {
+    final crop = controller.crop.multiply(size);
+    double left = crop.left;
+    double top = crop.top;
+    double right = crop.right;
+    double bottom = crop.bottom;
+
+    switch (type) {
+      case _CornerTypes.Top:
+        {
+          double newTop = crop.top + point.dy;
+          newTop = newTop.clamp(crop.bottom - widget.maximumImageSize,
+              crop.bottom - widget.minimumImageSize);
+          top = newTop;
+          break;
+        }
+      case _CornerTypes.Bottom:
+        {
+          double newBottom = crop.bottom + point.dy;
+          newBottom = newBottom.clamp(crop.top + widget.minimumImageSize,
+              math.min(size.height, crop.top + widget.maximumImageSize));
+          bottom = newBottom;
+          break;
+        }
+      case _CornerTypes.Left:
+        {
+          double newLeft = crop.left + point.dx;
+          newLeft = newLeft.clamp(
+              math.max(0, crop.right - widget.maximumImageSize),
+              crop.right - widget.minimumImageSize);
+          left = newLeft;
+          break;
+        }
+      case _CornerTypes.Right:
+        {
+          double newRight = crop.right + point.dx;
+          newRight = newRight.clamp(crop.left + widget.minimumImageSize,
+              math.min(size.width, crop.left + widget.maximumImageSize));
+          right = newRight;
+          break;
+        }
+      default:
+        break;
     }
 
     controller.crop = Rect.fromLTRB(left, top, right, bottom).divide(size);
