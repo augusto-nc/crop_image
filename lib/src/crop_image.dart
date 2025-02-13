@@ -199,6 +199,7 @@ class _CropImageState extends State<CropImage> {
   late ImageStreamListener _streamListener;
   var currentCrop = Rect.zero;
   _TouchPoint? panStart;
+  Size size = Size.zero;
 
   Map<_CornerTypes, Offset> get gridCorners => <_CornerTypes, Offset>{
         _CornerTypes.UpperLeft: controller.crop.topLeft
